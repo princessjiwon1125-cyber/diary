@@ -15,9 +15,17 @@
 <body>
 <script>
 /* The diary page asks for window.claude.use("db"); here that db is the signed-in person's Firebase space. */
+window.__visitorHandle = decodeURIComponent((location.hash || "").slice(1)).trim().toLowerCase().replace(/[^a-z0-9._-]/g, "");
+if (window.__visitorHandle) {
+  // Viewing someone's shared diary: never mix in this browser's own cached look.
+  const g = Storage.prototype.getItem, st = Storage.prototype.setItem;
+  Storage.prototype.getItem = function (k) { return /^diet/.test(k) ? null : g.call(this, k); };
+  Storage.prototype.setItem = function (k, v) { if (!/^diet/.test(k)) st.call(this, k, v); };
+  document.documentElement.classList.add("visitor");
+}
 window.DIARY_GOAL_DEFAULT = {start: null, lo: null, hi: null};
 window.__dbReady = new Promise(r => { window.__resolveDb = r; });
-window.claude = { use: async n => n === "db" ? window.__dbReady : n === "user" ? { can: async () => true } : null };
+window.claude = { use: async n => n === "db" ? window.__dbReady : n === "user" ? { can: async () => !window.__visitorHandle } : null };
 </script>
 <style>
 .gate{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:16px;
@@ -37,6 +45,12 @@ window.claude = { use: async n => n === "db" ? window.__dbReady : n === "user" ?
 .gate button:disabled{opacity:.6;cursor:wait}
 .gate .msg{min-height:1.3em;margin:10px 0 0;font-size:13px;color:#b8325a}
 .gate .fine{margin:10px 0 0;font-size:11.5px;opacity:.75}
+.visitor .gate{display:none}
+.visitor .topnav a[href="#write"],.visitor .topnav [data-open-dress],.visitor #stkOpen,.visitor #czOpen,.visitor .dressme,.visitor #write,.visitor #buddy,.visitor .wb-bar,.visitor #wbPick,.visitor .entry .tools,.visitor .tools,.visitor .tray{display:none!important}
+.visitor .wg *{pointer-events:none}.visitor .wg a{pointer-events:auto}
+.vbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:50;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;padding:8px 16px;background:#fffafc;border-bottom:2px solid #f7b3cb;font-family:"DotGothic16","Pixelify Sans",monospace;font-size:13px;color:#5a2f45}
+.vbar a{color:#a35d7c}
+.vmiss{max-width:340px;margin:18vh auto 0;padding:22px 20px;text-align:center;background:#fffafc;border:2.5px solid #a35d7c;border-radius:22px;font-family:"DotGothic16","Pixelify Sans",monospace;color:#5a2f45}
 </style>
 <div class="gate" id="gate">
   <form class="gate-card" id="gateForm" autocomplete="on">
@@ -922,6 +936,11 @@ body.th-cocoa{background-color:#f8eee8;background-image:linear-gradient(90deg,rg
     <button type="button" class="btn alt" id="bkExport">Download backup</button>
     <label class="btn alt" style="cursor:pointer">Restore backup<input type="file" id="bkImport" accept="application/json,.json" hidden></label></div>
     <div class="small" id="bkMsg" role="status" aria-live="polite"></div></div>
+  <div class="cz-sec"><span>Share my diary</span>
+    <label class="pick"><input type="checkbox" id="shareOn" style="width:22px;height:22px"> anyone with the link can view (they can't edit)</label>
+    <div id="shareBox" hidden style="margin-top:6px"><input type="text" id="shareUrl" readonly aria-label="Your view-only link" style="width:100%;box-sizing:border-box;font-family:var(--f-pix);font-size:13px;padding:6px 8px;border:1.5px solid var(--pink);border-radius:8px;background:#fff;color:var(--ink)">
+    <button type="button" class="btn alt" id="shareCopy" style="margin-top:6px">Copy link</button></div>
+    <div class="small" id="shareMsg" role="status" aria-live="polite"></div></div>
   <button type="button" class="btn reset" id="stkOpen2">Move &amp; add stickers ★</button>
   <button type="button" class="btn alt reset" id="czReset">Reset to default</button>
   <div class="small" id="czMsg" role="status" aria-live="polite" style="text-align:center;margin-top:6px"></div>
@@ -1920,7 +1939,7 @@ Rules:
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, doc, collection, setDoc, deleteDoc, onSnapshot, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, doc, collection, setDoc, deleteDoc, onSnapshot, getDocs, getDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const $ = id => document.getElementById(id);
@@ -1943,6 +1962,33 @@ const nice = e => ({
   "auth/weak-password": "password needs 6+ characters", "auth/too-many-requests": "too many tries. wait a minute and try again",
   "auth/network-request-failed": "can't reach the internet right now"
 })[e && e.code] || "something went wrong. try again";
+
+const handleOf = name => name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9._-]/g, "");
+const wrapSnap = s => ({ exists: s.exists(), data: () => s.data() });
+function readOnlyDb(base){
+  const ref = p => doc(fs, base + "/" + p), no = async () => { const e = new Error("read-only"); e.code = "invalid_argument"; throw e; };
+  const docApi = p => ({ onSnapshot: (f, e) => onSnapshot(ref(p), s => f(wrapSnap(s)), e), set: no, update: no, delete: no });
+  return { doc: docApi, collection: c => ({ doc: id => docApi(c + "/" + id),
+    onSnapshot: (f, e) => onSnapshot(collection(fs, base + "/" + c), s => f({ docs: s.docs.map(d => ({ id: d.id, data: () => d.data() })) }), e) }) };
+}
+async function startVisitor(h){
+  let info = null;
+  try { const s = await getDoc(doc(fs, "handles/" + h)); info = s.exists() ? s.data() : null;
+    if (info) { const sh = await getDoc(doc(fs, "users/" + info.uid + "/settings/share")); if (!(sh.exists() && sh.data().public)) info = null; } } catch { info = null; }
+  if (!info) {
+    document.body.innerHTML = `<div class="vmiss"><p style="font-size:16px;margin:0 0 8px">this diary is private ♡</p><p style="margin:0 0 14px;font-size:13px">the link may be old, or its owner turned sharing off.</p><a href="./" style="color:#a35d7c">open my own diary →</a></div>`;
+    return;
+  }
+  window.diaryUser = info.name || h;
+  document.title = window.diaryUser + "'s world ♡ diet diary";
+  const bar = document.createElement("div"); bar.className = "vbar";
+  bar.innerHTML = `<span>you're viewing ${window.diaryUser.replace(/[<>&"]/g, "")}'s diary · view only ♡</span><a href="./">make my own diary →</a>`;
+  document.body.prepend(bar);
+  window.__resolveDb(readOnlyDb("users/" + info.uid));
+  if (window.__applyWords) window.__applyWords();
+}
+if (window.__visitorHandle) await startVisitor(window.__visitorHandle);
+else {
 
 $("gName").addEventListener("input", () => { const n = cleanName($("gName").value); $("gateTitle").textContent = n ? n + "'s world" : "my world"; });
 async function go(isNew){
@@ -1981,6 +2027,22 @@ function start(user){
   if (window.__applyWords) window.__applyWords();
   gate.hidden = true;
 
+  const handle = handleOf(window.diaryUser), shareUrl = location.origin + location.pathname + "#" + handle;
+  const shareRef = ref("settings/share");
+  onSnapshot(shareRef, s => { const on = !!(s.exists() && s.data().public); $("shareOn").checked = on; $("shareBox").hidden = !on; $("shareUrl").value = shareUrl; }, () => {});
+  $("shareOn").onchange = async e => {
+    const on = e.target.checked; $("shareMsg").textContent = on ? "turning sharing on…" : "turning sharing off…";
+    try {
+      if (on) await setDoc(doc(fs, "handles/" + handle), { uid: user.uid, name: window.diaryUser });
+      await setDoc(shareRef, { public: on, handle, updatedAt: new Date().toISOString() });
+      $("shareMsg").textContent = on ? "your diary is shared. only people with the link can find it ♡" : "sharing is off. the link now shows \"private\".";
+    } catch (err) {
+      e.target.checked = !on; $("shareBox").hidden = on;
+      $("shareMsg").textContent = err && err.code === "permission-denied" ? "that link name is taken by another diary." : "couldn't change sharing. try again.";
+    }
+  };
+  $("shareCopy").onclick = async () => { try { await navigator.clipboard.writeText(shareUrl); $("shareMsg").textContent = "link copied ♡"; } catch { $("shareUrl").select(); $("shareMsg").textContent = "press copy on your keyboard to copy it"; } };
+
   $("bkExport").onclick = async () => {
     const docs = {};
     for (const c of ["days", "settings"]) (await getDocs(collection(fs, base + "/" + c))).forEach(d => { docs[c + "/" + d.id] = d.data(); });
@@ -2001,6 +2063,7 @@ function start(user){
 }
 $("acctOut").onclick = async () => { try { KEYS.forEach(k => localStorage.removeItem(k)); } catch {} await signOut(auth); location.reload(); };
 onAuthStateChanged(auth, user => { if (user) start(user); else { gate.hidden = false; setTimeout(() => $("gName").focus(), 50); } });
+}
 </script>
 </body>
 </html>

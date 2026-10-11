@@ -1,9 +1,21 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Each person can only read and write their own diary.
+    function isShared(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)/settings/share)
+        && get(/databases/$(database)/documents/users/$(uid)/settings/share).data.public == true;
+    }
+    // Each person reads and writes their own diary. Anyone can read a diary its owner shared.
     match /users/{uid}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if (request.auth != null && request.auth.uid == uid) || isShared(uid);
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Share-link names: anyone can look one up; only its owner can claim or change it.
+    match /handles/{handle} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid;
     }
   }
 }
